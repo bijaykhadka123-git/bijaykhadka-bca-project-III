@@ -19,7 +19,7 @@ import { toast } from 'react-hot-toast';
 import MessageActions from './MessageActions';
 import GroupManagement from './GroupManagement';
 import EmojiPicker from 'emoji-picker-react';
-import { decryptMessage } from '../helpers/crypto';
+import { decryptMessage } from '../shared/crypto';
 
 const GroupMessagePage = () => {
   const socketConnection = useSelector(state => state?.user?.socketConnection)
@@ -150,7 +150,6 @@ const GroupMessagePage = () => {
       ...prev,
       text: prev.text + emojiObject.emoji
     }))
-    setShowEmojiPicker(false)
   }
 
   const toggleEmojiPicker = () => {

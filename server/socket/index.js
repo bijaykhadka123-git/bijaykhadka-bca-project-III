@@ -6,7 +6,7 @@ const UserModel = require('../models/UserModel')
 const { ConversationModel,MessageModel } = require('../models/ConversationModel')
 const ConversationHelper = require('../helpers/getConversation')
 const GroupModel = require('../models/GroupModel')
-const CryptoHelper = require('../helpers/crypto')
+const CryptoHelper = require('../../shared/crypto');
 const HmacHelper = require('../helpers/hmac')
 const HMAC_SECRET = 'hardcoded-hmac-secret-key' // Hardcoded for demo, use env var in production
 
@@ -79,7 +79,10 @@ io.on('connection',async(socket)=>{
             }
             return {
                 ...msg.toObject(),
-                text: decryptedText // Decrypt for display
+                text: decryptedText, // for display
+                encryptedText: msg.text, // for HMAC verification
+                imageUrl: msg.imageUrl || '',
+                videoUrl: msg.videoUrl || ''
             };
         }) || []
 
@@ -87,90 +90,89 @@ io.on('connection',async(socket)=>{
     })
 
     //new message
-    socket.on('new message',async(data)=>{
+    socket.on('new message', async (data) => {
+      try {
+        // Check for required fields
+        if (!data?.sender || !data?.receiver || !data?.msgByUserId || !data?.text) {
+          console.error('Missing required fields in new message data:', data);
+          return;
+        }
         //check conversation is available both user
         let conversation = await ConversationModel.findOne({
-            "$or" : [
-                { sender : data?.sender, receiver : data?.receiver },
-                { sender : data?.receiver, receiver :  data?.sender}
-            ]
-        })
+          "$or": [
+            { sender: data?.sender, receiver: data?.receiver },
+            { sender: data?.receiver, receiver: data?.sender }
+          ]
+        });
         //if conversation is not available
-        if(!conversation){
-            const createConversation = await ConversationModel({
-                sender : data?.sender,
-                receiver : data?.receiver
-            })
-            conversation = await createConversation.save()
+        if (!conversation) {
+          const createConversation = await ConversationModel({
+            sender: data?.sender,
+            receiver: data?.receiver
+          });
+          conversation = await createConversation.save();
         }
-        // Encrypt message text before storing in database
-        const encryptedText = CryptoHelper.encryptMessage(data.text)
-        const signature = CryptoHelper.signHMAC(encryptedText + (data.imageUrl || '') + (data.videoUrl || ''))
-        // Generate HMAC for message authentication using from-scratch implementation
-        const hmac = HmacHelper.generateHmac(encryptedText + (data.imageUrl || '') + (data.videoUrl || ''))
-        
-        console.log('=== RSA ENCRYPTION DEBUG ===');
-        console.log('Original text:', data.text);
-        console.log('Encrypted text:', encryptedText);
-        console.log('Decrypted text:', CryptoHelper.decryptMessage(encryptedText));
-        console.log('Encryption working:', data.text === CryptoHelper.decryptMessage(encryptedText));
-        console.log('Signature:', signature);
-        console.log('Signature valid:', CryptoHelper.verifyHMAC(encryptedText + (data.imageUrl || '') + (data.videoUrl || ''), signature));
-        console.log('================================');
-        
+        // Ensure imageUrl and videoUrl are always strings
+        const imageUrl = data.imageUrl || '';
+        const videoUrl = data.videoUrl || '';
+        const encryptedText = CryptoHelper.encryptMessage(data.text);
+        const hmacInput = encryptedText + imageUrl + videoUrl;
+        const hmac = HmacHelper.generateHmac(hmacInput);
+        console.log('SERVER HMAC INPUT (save):', hmacInput, 'HMAC:', hmac);
         const message = new MessageModel({
-          text : encryptedText, // Store encrypted text
-          imageUrl : data.imageUrl,
-          videoUrl : data.videoUrl,
-          msgByUserId :  data?.msgByUserId,
-          hmac_sha256: hmac, // HMAC-SHA-256
-          hmac: signature // RSA signature (if still used)
-        })
-        const saveMessage = await message.save()
-
-        const updateConversation = await ConversationModel.updateOne({ _id : conversation?._id },{
-            "$push" : { messages : saveMessage?._id }
-        })
-
+          text: encryptedText, // Store encrypted text
+          imageUrl: imageUrl,
+          videoUrl: videoUrl,
+          msgByUserId: data?.msgByUserId,
+          hmac: hmac // Store HMAC only in the 'hmac' field
+        });
+        const saveMessage = await message.save();
+        if (!saveMessage) {
+          console.error('Failed to save message:', message);
+          return;
+        }
+        const updateConversation = await ConversationModel.updateOne({ _id: conversation?._id }, {
+          "$push": { messages: saveMessage?._id }
+        });
+        if (!updateConversation) {
+          console.error('Failed to update conversation:', conversation?._id);
+        }
         const getConversationMessage = await ConversationModel.findOne({
-            "$or" : [
-                { sender : data?.sender, receiver : data?.receiver },
-                { sender : data?.receiver, receiver :  data?.sender}
-            ]
-        }).populate('messages').sort({ updatedAt : -1 })
-
+          "$or": [
+            { sender: data?.sender, receiver: data?.receiver },
+            { sender: data?.receiver, receiver: data?.sender }
+          ]
+        }).populate('messages').sort({ updatedAt: -1 });
         // Decrypt messages before sending to clients
         const decryptedMessages = getConversationMessage?.messages?.map(msg => {
-            let decryptedText;
-            try {
-                console.log('=== DECRYPTION DEBUG ===');
-                console.log('Stored text:', msg.text);
-                console.log('Text type:', typeof msg.text);
-                console.log('Text length:', msg.text?.length);
-                decryptedText = CryptoHelper.decryptMessage(msg.text);
-                console.log('Decrypted text:', decryptedText);
-                console.log('Decryption working:', decryptedText !== msg.text);
-                console.log('========================');
-            } catch (error) {
-                console.error('Decryption failed:', error);
-                decryptedText = '[Message decryption failed]';
-            }
-            return {
-                ...msg.toObject(),
-                text: decryptedText // Decrypt for display
-            };
-        }) || []
-
-        io.to(data?.sender).emit('message', decryptedMessages)
-        io.to(data?.receiver).emit('message', decryptedMessages)
-
+          let decryptedText;
+          try {
+            decryptedText = CryptoHelper.decryptMessage(msg.text);
+          } catch (error) {
+            decryptedText = '[Message decryption failed]';
+          }
+          // Always use encrypted text for HMAC input
+          const emitHmacInput = (msg.text || '') + (msg.imageUrl || '') + (msg.videoUrl || '');
+          console.log('SERVER HMAC INPUT (emit):', emitHmacInput, 'HMAC:', msg.hmac);
+          return {
+            ...msg.toObject(),
+            text: decryptedText, // for display
+            encryptedText: msg.text, // for HMAC verification
+            imageUrl: msg.imageUrl || '',
+            videoUrl: msg.videoUrl || ''
+          };
+        }) || [];
+        io.to(data?.sender).emit('message', decryptedMessages);
+        io.to(data?.receiver).emit('message', decryptedMessages);
         //send conversation
-        const conversationSender = await ConversationHelper.getConversation(data?.sender)
-        const conversationReceiver = await ConversationHelper.getConversation(data?.receiver)
-
-        io.to(data?.sender).emit('conversation',conversationSender)
-        io.to(data?.receiver).emit('conversation',conversationReceiver)
-    })
+        const conversationSender = await ConversationHelper.getConversation(data?.sender);
+        const conversationReceiver = await ConversationHelper.getConversation(data?.receiver);
+        io.to(data?.sender).emit('conversation', conversationSender);
+        io.to(data?.receiver).emit('conversation', conversationReceiver);
+      } catch (error) {
+        console.error('Error in new message handler:', error);
+      }
+    });
 
     //sidebar
     socket.on('sidebar',async(currentUserId)=>{
@@ -266,7 +268,7 @@ io.on('connection',async(socket)=>{
         try {
             // Encrypt the new text before storing
             const encryptedText = CryptoHelper.encryptMessage(data.newText)
-            const signature = CryptoHelper.signHMAC(encryptedText + (data.imageUrl || '') + (data.videoUrl || ''))
+            const signature = HmacHelper.generateHmac(encryptedText + (data.imageUrl || '') + (data.videoUrl || ''));
             const updatedMessage = await MessageModel.findByIdAndUpdate(
                 data.messageId,
                 { 
@@ -341,13 +343,13 @@ io.on('connection',async(socket)=>{
         // data: { groupId, senderId, text, imageUrl, videoUrl, hmac }
         // Encrypt message text before storing
         const encryptedText = CryptoHelper.encryptMessage(data.text)
-        const signature = CryptoHelper.signHMAC(encryptedText + (data.imageUrl || '') + (data.videoUrl || ''))
+        const signature = HmacHelper.generateHmac(encryptedText + (data.imageUrl || '') + (data.videoUrl || ''));
         const message = new MessageModel({
             text: encryptedText, // Store encrypted text
             imageUrl: data.imageUrl,
             videoUrl: data.videoUrl,
             msgByUserId: data.senderId,
-            hmac: signature
+            hmac: signature // Store HMAC only in the 'hmac' field
         })
         await message.save()
         await GroupModel.updateOne({ _id: data.groupId }, { $push: { messages: message._id } })

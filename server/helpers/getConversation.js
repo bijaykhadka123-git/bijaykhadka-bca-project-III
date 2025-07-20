@@ -1,5 +1,5 @@
 const { ConversationModel } = require("../models/ConversationModel")
-const CryptoHelper = require('./crypto')
+const CryptoHelper = require('../../shared/crypto');
 
 class ConversationHelper {
     static async getConversation(currentUserId) {

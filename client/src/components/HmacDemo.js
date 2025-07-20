@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { signHMAC, verifyHMAC } from '../helpers/crypto';
+import { signHMAC, verifyHMAC } from '../shared/crypto';
 import { IoClose } from 'react-icons/io5';
 
 const HmacDemo = ({ onClose }) => {

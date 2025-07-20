@@ -1,6 +1,6 @@
 const GroupModel = require('../models/GroupModel')
 const { MessageModel } = require('../models/ConversationModel')
-const CryptoHelper = require('../helpers/crypto')
+const CryptoHelper = require('../../shared/crypto');
 const HmacHelper = require('../helpers/hmac')
 
 class GroupController {
@@ -48,7 +48,7 @@ class GroupController {
         try {
             const { groupId, senderId, text, imageUrl, videoUrl } = req.body
             const encryptedText = CryptoHelper.encryptMessage(text)
-            const signature = CryptoHelper.signHMAC(encryptedText + (imageUrl || '') + (videoUrl || ''))
+            const signature = HmacHelper.generateHmac(encryptedText + (imageUrl || '') + (videoUrl || ''))
             const hmac = HmacHelper.generateHmac(encryptedText + (imageUrl || '') + (videoUrl || ''))
             const message = new MessageModel({ text: encryptedText, imageUrl, videoUrl, msgByUserId: senderId, hmac_sha256: hmac, signature })
             await message.save()

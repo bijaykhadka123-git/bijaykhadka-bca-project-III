@@ -17,7 +17,7 @@ import moment from 'moment'
 import MessageActions from './MessageActions';
 import toast from 'react-hot-toast';
 import EmojiPicker from 'emoji-picker-react';
-import { decryptMessage, verifyHMAC } from '../helpers/crypto';
+import { decryptMessage, verifyHMAC } from '../shared/crypto';
 import axios from 'axios';
 import { FaTrash } from "react-icons/fa6";
 
@@ -134,7 +134,6 @@ const MessagePage = () => {
       ...prev,
       text: prev.text + emojiObject.emoji
     }))
-    setShowEmojiPicker(false)
   }
 
   const toggleEmojiPicker = () => {
@@ -151,13 +150,17 @@ const MessagePage = () => {
         }) 
         
         socketConnection.on('message', async (data) => {
+          // Debug: log all messages received from the server
+          console.log('ALL MESSAGES FROM SERVER:', data);
           // HMAC verification for each message
           const verifiedMessages = [];
           let tampered = false;
           for (const msg of data) {
             // If message has hmac field, verify it
+            const hmacInput = (msg.encryptedText || msg.text) + (msg.imageUrl || '') + (msg.videoUrl || '');
+            console.log('CLIENT HMAC INPUT:', hmacInput, 'HMAC:', msg.hmac, 'ENCRYPTED:', msg.encryptedText, 'TEXT:', msg.text);
             if (msg.hmac) {
-              const valid = await verifyHMAC(msg.text, msg.hmac);
+              const valid = await verifyHMAC(hmacInput, msg.hmac);
               if (valid) {
                 verifiedMessages.push(msg);
               } else {
@@ -168,6 +171,8 @@ const MessagePage = () => {
               verifiedMessages.push(msg);
             }
           }
+          // Debug: log verified messages that will be shown in the UI
+          console.log('VERIFIED MESSAGES FOR UI:', verifiedMessages);
           setAllMessage(verifiedMessages);
           setTamperedDetected(tampered);
           if (tampered && !tamperedToastShown.current) {
@@ -207,13 +212,13 @@ const MessagePage = () => {
     e.preventDefault();
     if (message.text || message.imageUrl || message.videoUrl) {
       if (socketConnection) {
-        socketConnection.emit('group-message', {
-          groupId: groupId,
-          senderId: user._id,
+        socketConnection.emit('new message', {
+          sender: user._id,
+          receiver: params.userId,
           text: message.text,
           imageUrl: message.imageUrl,
           videoUrl: message.videoUrl,
-          msgByUserId: user._id // <-- THIS LINE FIXES THE ALIGNMENT ISSUE
+          msgByUserId: user._id
         });
 
         // If you optimistically add the message to the UI, do it like this:

@@ -1,6 +1,7 @@
 const { MessageModel, ConversationModel } = require('../models/ConversationModel')
 const GroupModel = require('../models/GroupModel')
-const CryptoHelper = require('../helpers/crypto')
+const CryptoHelper = require('../../shared/crypto');
+const HmacHelper = require('../helpers/hmac');
 const mongoose = require('mongoose'); // Ensure this is at the top
 
 class MessageController {
@@ -11,7 +12,7 @@ class MessageController {
                 return res.status(400).json({ message: 'Message ID and new text are required', error: true })
             }
             const encryptedText = CryptoHelper.encryptMessage(newText)
-            const signature = CryptoHelper.signHMAC(encryptedText)
+            const signature = HmacHelper.generateHmac(encryptedText)
             const updatedMessage = await MessageModel.findByIdAndUpdate(
                 messageId,
                 { 

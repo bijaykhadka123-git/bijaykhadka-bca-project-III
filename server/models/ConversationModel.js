@@ -13,6 +13,18 @@ const messageSchema = new mongoose.Schema({
         type : String,
         default : ""
     },
+    fileUrl: {
+        type: String,
+        default: ""
+    },
+    fileName: {
+        type: String,
+        default: ""
+    },
+    fileType: {
+        type: String,
+        default: ""
+    },
     seen : {
         type : Boolean,
         default : false
@@ -53,6 +65,12 @@ const conversationSchema = new mongoose.Schema({
         {
             type : mongoose.Schema.ObjectId,
             ref : 'Message'
+        }
+    ],
+    deletedFor: [
+        {
+            type: mongoose.Schema.ObjectId,
+            ref: 'User'
         }
     ]
 },{

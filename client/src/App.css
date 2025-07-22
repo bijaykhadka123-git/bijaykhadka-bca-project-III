@@ -7,3 +7,10 @@
 .scrollbar::-webkit-scrollbar-thumb{
   @apply bg-slate-200 rounded-full
 }
+
+.message-image {
+  width: 100px;
+  height: 100px;
+  object-fit: cover;
+  border-radius: 8px;
+}

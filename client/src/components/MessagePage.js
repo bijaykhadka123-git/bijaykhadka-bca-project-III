@@ -17,9 +17,12 @@ import moment from 'moment'
 import MessageActions from './MessageActions';
 import toast from 'react-hot-toast';
 import EmojiPicker from 'emoji-picker-react';
-import { decryptMessage, verifyHMAC } from '../shared/crypto';
+import Crypto from '../shared/crypto';
 import axios from 'axios';
 import { FaTrash } from "react-icons/fa6";
+import { FaFile } from "react-icons/fa6";
+
+let tamperedToastActive = false;
 
 const MessagePage = () => {
   const params = useParams()
@@ -34,16 +37,17 @@ const MessagePage = () => {
   })
   const [openImageVideoUpload,setOpenImageVideoUpload] = useState(false)
   const [showEmojiPicker,setShowEmojiPicker] = useState(false)
-  const [message,setMessage] = useState({
-    text : "",
-    imageUrl : "",
-    videoUrl : ""
-  })
+  const [message, setMessage] = useState({
+    text: "",
+    imageUrl: "",
+    videoUrl: "",
+    fileUrl: "",
+    fileName: "",
+    fileType: ""
+  });
   const [loading,setLoading] = useState(false)
   const [allMessage,setAllMessage] = useState([])
   const currentMessage = useRef(null)
-  const [tamperedDetected, setTamperedDetected] = useState(false);
-  const tamperedToastShown = useRef(false);
   const [showHeaderMenu, setShowHeaderMenu] = useState(false);
   const [conversationId, setConversationId] = useState(null);
 
@@ -76,6 +80,9 @@ const MessagePage = () => {
     };
     fetchConversationId();
   }, [user?._id, params.userId]);
+
+  useEffect(() => {
+  }, [params.userId]);
 
   const handleUploadImageVideoOpen = ()=>{
     setOpenImageVideoUpload(preve => !preve)
@@ -129,6 +136,20 @@ const MessagePage = () => {
     })
   }
 
+  const handleUploadFile = async (e) => {
+    const file = e.target.files[0];
+    setLoading(true);
+    const uploadRes = await uploadFile(file);
+    setLoading(false);
+    setOpenImageVideoUpload(false);
+    setMessage(prev => ({
+      ...prev,
+      fileUrl: uploadRes.url,
+      fileName: file.name,
+      fileType: file.type
+    }));
+  };
+
   const handleEmojiClick = (emojiObject) => {
     setMessage(prev => ({
       ...prev,
@@ -148,37 +169,53 @@ const MessagePage = () => {
         socketConnection.on('message-user',(data)=>{
           setDataUser(data)
         }) 
-        
         socketConnection.on('message', async (data) => {
-          // Debug: log all messages received from the server
-          console.log('ALL MESSAGES FROM SERVER:', data);
-          // HMAC verification for each message
-          const verifiedMessages = [];
+          // First, check for any tampered messages in the original array
           let tampered = false;
           for (const msg of data) {
-            // If message has hmac field, verify it
-            const hmacInput = (msg.encryptedText || msg.text) + (msg.imageUrl || '') + (msg.videoUrl || '');
-            console.log('CLIENT HMAC INPUT:', hmacInput, 'HMAC:', msg.hmac, 'ENCRYPTED:', msg.encryptedText, 'TEXT:', msg.text);
+            const hmacInput =
+              (msg.encryptedText || msg.text) +
+              (msg.imageUrl || '') +
+              (msg.videoUrl || '') +
+              (msg.fileUrl || '') +
+              (msg.fileName || '') +
+              (msg.fileType || '');
             if (msg.hmac) {
-              const valid = await verifyHMAC(hmacInput, msg.hmac);
+              const valid = await Crypto.verifyHMAC(hmacInput, msg.hmac);
+              if (!valid) {
+                tampered = true;
+                break;
+              }
+            }
+          }
+          // Show only one warning at a time
+          if (tampered && !tamperedToastActive) {
+            tamperedToastActive = true;
+            toast.error('A message was tampered with and has been hidden for your security!', {
+              duration: 5000,
+              onClose: () => { tamperedToastActive = false; }
+            });
+          }
+          // Now filter out tampered messages for display
+          const verifiedMessages = [];
+          for (const msg of data) {
+            const hmacInput =
+              (msg.encryptedText || msg.text) +
+              (msg.imageUrl || '') +
+              (msg.videoUrl || '') +
+              (msg.fileUrl || '') +
+              (msg.fileName || '') +
+              (msg.fileType || '');
+            if (msg.hmac) {
+              const valid = await Crypto.verifyHMAC(hmacInput, msg.hmac);
               if (valid) {
                 verifiedMessages.push(msg);
-              } else {
-                tampered = true;
               }
             } else {
-              // If no hmac, just show (legacy or system message)
               verifiedMessages.push(msg);
             }
           }
-          // Debug: log verified messages that will be shown in the UI
-          console.log('VERIFIED MESSAGES FOR UI:', verifiedMessages);
           setAllMessage(verifiedMessages);
-          setTamperedDetected(tampered);
-          if (tampered && !tamperedToastShown.current) {
-            toast.error('A message was tampered with and has been hidden for your security!', { duration: 5000 });
-            tamperedToastShown.current = true;
-          }
         })
 
         // Listen for message edit events
@@ -192,7 +229,40 @@ const MessagePage = () => {
 
         // Listen for message delete events
         socketConnection.on('message-deleted', (data) => {
-          setAllMessage(prev => prev.filter(msg => msg._id !== data.messageId))
+          setAllMessage(prev => {
+            const updated = prev.filter(msg => msg._id !== data.messageId);
+            // Async helper to check for tampered messages and manage sessionStorage
+            const checkAndWarnTampered = async (messages) => {
+              const warningKey = `tamperedWarningShown_${params.userId}`;
+              let tampered = false;
+              for (const msg of messages) {
+                const hmacInput =
+                  (msg.encryptedText || msg.text) +
+                  (msg.imageUrl || '') +
+                  (msg.videoUrl || '') +
+                  (msg.fileUrl || '') +
+                  (msg.fileName || '') +
+                  (msg.fileType || '');
+                if (msg.hmac) {
+                  const valid = await Crypto.verifyHMAC(hmacInput, msg.hmac);
+                  if (!valid) {
+                    tampered = true;
+                    break;
+                  }
+                }
+              }
+              if (tampered && !sessionStorage.getItem(warningKey)) {
+                toast.error('A message was tampered with and has been hidden for your security!', { duration: 5000 });
+                sessionStorage.setItem(warningKey, 'true');
+              }
+              // Only clear the warning if there are NO tampered messages at all and the key is set
+              if (!tampered && sessionStorage.getItem(warningKey)) {
+                sessionStorage.removeItem(warningKey);
+              }
+            };
+            checkAndWarnTampered(updated);
+            return updated;
+          });
         })
       }
   },[socketConnection,params?.userId,user])
@@ -210,7 +280,7 @@ const MessagePage = () => {
 
   const handleSendMessage = (e) => {
     e.preventDefault();
-    if (message.text || message.imageUrl || message.videoUrl) {
+    if (message.text || message.imageUrl || message.videoUrl || message.fileUrl) {
       if (socketConnection) {
         socketConnection.emit('new message', {
           sender: user._id,
@@ -218,6 +288,9 @@ const MessagePage = () => {
           text: message.text,
           imageUrl: message.imageUrl,
           videoUrl: message.videoUrl,
+          fileUrl: message.fileUrl,
+          fileName: message.fileName,
+          fileType: message.fileType,
           msgByUserId: user._id
         });
 
@@ -228,6 +301,9 @@ const MessagePage = () => {
             text: message.text,
             imageUrl: message.imageUrl,
             videoUrl: message.videoUrl,
+            fileUrl: message.fileUrl,
+            fileName: message.fileName,
+            fileType: message.fileType,
             msgByUserId: user._id, // <-- THIS LINE IS ALSO IMPORTANT
             createdAt: new Date(),
             // add any other fields you need for display
@@ -237,7 +313,10 @@ const MessagePage = () => {
         setMessage({
           text: "",
           imageUrl: "",
-          videoUrl: ""
+          videoUrl: "",
+          fileUrl: "",
+          fileName: "",
+          fileType: ""
         });
       }
     }
@@ -299,8 +378,24 @@ const MessagePage = () => {
                     {showHeaderMenu && (
                       <div className='absolute right-0 top-8 bg-white border border-gray-200 rounded shadow-lg z-50 min-w-[140px]'>
                         <button
-                          onClick={() => {
+                          onClick={async () => {
                             setShowHeaderMenu(false);
+                            console.log('conversationId:', conversationId, 'userId:', user?._id);
+                            if (conversationId && user?._id) {
+                              try {
+                                const res = await axios.post('/api/conversation/soft-delete', {
+                                  conversationId,
+                                  userId: user._id
+                                }, { withCredentials: true });
+                                console.log('Delete response:', res.data);
+                                window.location.href = '/'; // Redirect to home after delete
+                              } catch (err) {
+                                console.error('Delete failed:', err);
+                                toast.error('Failed to delete conversation');
+                              }
+                            } else {
+                              console.warn('Missing conversationId or userId');
+                            }
                           }}
                           className='w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-gray-100 text-sm text-red-700 border-t border-gray-200'
                         >
@@ -320,30 +415,57 @@ const MessagePage = () => {
                   <div className='flex flex-col gap-2 py-2 mx-2' ref={currentMessage}>
                     {
                       allMessage.map((msg,index)=>{
+                        const hasContent =
+                          (msg.text && msg.text.trim() !== '') ||
+                          (msg.imageUrl && msg.imageUrl.trim() !== '') ||
+                          (msg.videoUrl && msg.videoUrl.trim() !== '') ||
+                          (msg.fileUrl && msg.fileUrl.trim() !== '');
+                        if (!hasContent) return null;
+                        let fileUrl = '';
+                        if (msg?.fileUrl) {
+                          const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8080';
+                          fileUrl = msg.fileUrl.startsWith('http') ? msg.fileUrl : backendUrl + msg.fileUrl;
+                        }
+                        let imageUrl = '';
+                        if (msg?.imageUrl) {
+                          const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8080';
+                          imageUrl = msg.imageUrl.startsWith('http') ? msg.imageUrl : backendUrl + msg.imageUrl;
+                        }
+                        let videoUrl = '';
+                        if (msg?.videoUrl) {
+                          const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8080';
+                          videoUrl = msg.videoUrl.startsWith('http') ? msg.videoUrl : backendUrl + msg.videoUrl;
+                        }
                         return(
                           <div key={msg._id || index} className={`p-1 py-1 rounded w-fit max-w-[280px] md:max-w-sm lg:max-w-md ${user._id === msg?.msgByUserId ? "ml-auto bg-teal-100" : "bg-white"}`}>
                             <div className='w-full relative'>
                               {
-                                msg?.imageUrl && (
+                                imageUrl && (
                                   <img 
-                                    src={msg?.imageUrl}
-                                    className='w-full h-full object-scale-down'
+                                    src={imageUrl}
+                                    className='message-image'
                                   />
                                 )
                               }
                               {
-                                msg?.videoUrl && (
+                                videoUrl && (
                                   <video
-                                    src={msg.videoUrl}
+                                    src={videoUrl}
                                     className='w-full h-full object-scale-down'
                                     controls
                                   />
                                 )
                               }
+                              {fileUrl && (
+                                <a href={fileUrl} download={msg.fileName} className='flex items-center gap-2 text-blue-600 hover:underline'>
+                                  <FaFile size={18}/>
+                                  <span>{msg.fileName || 'Download file'}</span>
+                                </a>
+                              )}
                             </div>
                             <div className="flex items-start justify-between gap-2">
                               <div className="flex-1">
-                                <p className='px-2'>{decryptMessage(msg.text)}</p>
+                                <p className='px-2'>{Crypto.decryptMessage(msg.text)}</p>
                                 {msg.edited && (
                                   <p className='text-xs text-gray-500 px-2 italic'>edited</p>
                                 )}
@@ -373,7 +495,7 @@ const MessagePage = () => {
                             <img
                               src={message.imageUrl}
                               alt='uploadImage'
-                              className='aspect-square w-full h-full max-w-sm m-2 object-scale-down'
+                              className='message-image m-2'
                             />
                         </div>
                       </div>
@@ -400,57 +522,21 @@ const MessagePage = () => {
                     )
                   }
 
-                  {
-                    loading && (
-                      <div className='w-full h-full flex sticky bottom-0 justify-center items-center'>
-                        <Loading/>
-                      </div>
-                    )
-                  }
+                  {loading && (
+                    <div className="flex items-center gap-2 text-blue-500 mt-2">
+                      <span>Uploading file...</span>
+                    </div>
+                  )}
           </section>
 
           {/**send message */}
           <section className='h-16 bg-white flex items-center px-4'>
               <div className='relative '>
-                  <button onClick={handleUploadImageVideoOpen} className='flex justify-center items-center w-11 h-11 rounded-full hover:bg-primary hover:text-white'>
-                    <FaPlus size={20}/>
-                  </button>
-
-                  {/**video and image */}
-                  {
-                    openImageVideoUpload && (
-                      <div className='bg-white shadow rounded absolute bottom-14 w-36 p-2'>
-                      <form>
-                          <label htmlFor='uploadImage' className='flex items-center p-2 px-3 gap-3 hover:bg-slate-200 cursor-pointer'>
-                              <div className='text-primary'>
-                                  <FaImage size={18}/>
-                              </div>
-                              <p>Image</p>
-                          </label>
-                          <label htmlFor='uploadVideo' className='flex items-center p-2 px-3 gap-3 hover:bg-slate-200 cursor-pointer'>
-                              <div className='text-purple-500'>
-                                  <FaVideo size={18}/>
-                              </div>
-                              <p>Video</p>
-                          </label>
-
-                          <input 
-                            type='file'
-                            id='uploadImage'
-                            onChange={handleUploadImage}
-                            className='hidden'
-                          />
-
-                          <input 
-                            type='file'
-                            id='uploadVideo'
-                            onChange={handleUploadVideo}
-                            className='hidden'
-                          />
-                      </form>
-                      </div>
-                    )
-                  }
+                  <div className='flex gap-2 items-center'>
+                    <button onClick={handleUploadImageVideoOpen} className='flex justify-center items-center w-11 h-11 rounded-full hover:bg-primary hover:text-white'>
+                      <FaPlus size={20}/>
+                    </button>
+                  </div>
                   
               </div>
 
@@ -476,6 +562,19 @@ const MessagePage = () => {
                     value={message.text}
                     onChange={handleOnChange}
                   />
+                  {message.fileUrl && !loading && (
+                    <div className="flex items-center gap-2 bg-slate-100 p-2 rounded mt-2">
+                      <FaFile size={18} className="text-blue-500" />
+                      <span className="truncate max-w-xs">{message.fileName}</span>
+                      <button
+                        onClick={() => setMessage(prev => ({ ...prev, fileUrl: '', fileName: '', fileType: '' }))}
+                        className="text-red-500 hover:text-red-700"
+                        title="Remove file"
+                      >
+                        <IoClose size={18} />
+                      </button>
+                    </div>
+                  )}
                   <button className='text-primary hover:text-secondary'>
                       <IoMdSend size={28}/>
                   </button>
@@ -483,6 +582,49 @@ const MessagePage = () => {
               
           </section>
 
+          {/**upload Image/Video/File options */}
+          {openImageVideoUpload && (
+            <div className='bg-white shadow rounded absolute bottom-14 w-36 p-2'>
+              <form>
+                <label htmlFor='uploadImage' className='flex items-center p-2 px-3 gap-3 hover:bg-slate-200 cursor-pointer'>
+                  <div className='text-primary'>
+                    <FaImage size={18}/>
+                  </div>
+                  <p>Image</p>
+                </label>
+                <label htmlFor='uploadVideo' className='flex items-center p-2 px-3 gap-3 hover:bg-slate-200 cursor-pointer'>
+                  <div className='text-purple-500'>
+                    <FaVideo size={18}/>
+                  </div>
+                  <p>Video</p>
+                </label>
+                <label htmlFor='uploadFile' className='flex items-center p-2 px-3 gap-3 hover:bg-slate-200 cursor-pointer'>
+                  <div className='text-blue-500'>
+                    <FaFile size={18}/>
+                  </div>
+                  <p>File</p>
+                </label>
+                <input 
+                  type='file'
+                  id='uploadImage'
+                  onChange={handleUploadImage}
+                  className='hidden'
+                />
+                <input 
+                  type='file'
+                  id='uploadVideo'
+                  onChange={handleUploadVideo}
+                  className='hidden'
+                />
+                <input 
+                  type='file'
+                  id='uploadFile'
+                  onChange={handleUploadFile}
+                  className='hidden'
+                />
+              </form>
+            </div>
+          )}
 
 
     </div>

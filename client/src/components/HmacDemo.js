@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { signHMAC, verifyHMAC } from '../shared/crypto';
+import Crypto from '../shared/crypto';
 import { IoClose } from 'react-icons/io5';
 
 const HmacDemo = ({ onClose }) => {
@@ -13,7 +13,7 @@ const HmacDemo = ({ onClose }) => {
 
   const handleGenerate = async () => {
     setLoading(true);
-    const hmacValue = await signHMAC(message);
+    const hmacValue = await Crypto.signHMAC(message);
     setHmac(hmacValue);
     setTamperedMessage(message);
     setTamperedHmac(hmacValue);
@@ -24,7 +24,7 @@ const HmacDemo = ({ onClose }) => {
 
   const handleVerify = async () => {
     setLoading(true);
-    const valid = await verifyHMAC(tamperedMessage, tamperedHmac);
+    const valid = await Crypto.verifyHMAC(tamperedMessage, tamperedHmac);
     setVerifyResult(valid);
     setLoading(false);
   };

@@ -42,7 +42,7 @@ class MessageController {
 
     static async deleteMessage(req, res) {
         try {
-            const { messageId, groupId } = req.body
+            const { messageId, groupId, conversationId } = req.body
             if (!messageId) {
                 return res.status(400).json({ message: 'Message ID is required', error: true })
             }
@@ -53,7 +53,13 @@ class MessageController {
             if (groupId) {
                 await GroupModel.updateOne(
                     { _id: groupId },
-                    { $pull: { messages: messageId } }
+                    { $pull: { messages: mongoose.Types.ObjectId(messageId) } }
+                )
+            }
+            if (conversationId) {
+                await ConversationModel.updateOne(
+                    { _id: conversationId },
+                    { $pull: { messages: mongoose.Types.ObjectId(messageId) } }
                 )
             }
             res.json({ 
@@ -62,6 +68,22 @@ class MessageController {
             })
         } catch (error) {
             res.status(500).json({ message: error.message, error: true })
+        }
+    }
+
+    static async softDeleteConversation(req, res) {
+        try {
+            const { conversationId, userId } = req.body;
+            if (!conversationId || !userId) {
+                return res.status(400).json({ message: 'Conversation ID and User ID are required', error: true });
+            }
+            await ConversationModel.updateOne(
+                { _id: conversationId },
+                { $addToSet: { deletedFor: mongoose.Types.ObjectId(userId) } }
+            );
+            res.json({ message: 'Conversation hidden for user', success: true });
+        } catch (error) {
+            res.status(500).json({ message: error.message, error: true });
         }
     }
 

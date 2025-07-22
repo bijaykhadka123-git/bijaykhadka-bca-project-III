@@ -39,6 +39,7 @@ router.post('/group/delete', GroupController.deleteGroup)
 // Message operations
 router.put('/message/edit', MessageController.editMessage)
 router.delete('/message/delete', MessageController.deleteMessage)
+router.post('/conversation/soft-delete', MessageController.softDeleteConversation)
 router.get('/conversations/find/:userId1/:userId2', MessageController.findConversationByUserIds);
 
 module.exports = router

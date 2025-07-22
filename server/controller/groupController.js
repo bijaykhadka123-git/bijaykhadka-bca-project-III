@@ -46,16 +46,26 @@ class GroupController {
 
     static async sendGroupMessage(req, res) {
         try {
-            const { groupId, senderId, text, imageUrl, videoUrl } = req.body
-            const encryptedText = CryptoHelper.encryptMessage(text)
-            const signature = HmacHelper.generateHmac(encryptedText + (imageUrl || '') + (videoUrl || ''))
-            const hmac = HmacHelper.generateHmac(encryptedText + (imageUrl || '') + (videoUrl || ''))
-            const message = new MessageModel({ text: encryptedText, imageUrl, videoUrl, msgByUserId: senderId, hmac_sha256: hmac, signature })
-            await message.save()
-            await GroupModel.updateOne({ _id: groupId }, { $push: { messages: message._id } })
-            res.json({ message: 'Message sent', success: true })
+            const { groupId, senderId, text, imageUrl, videoUrl, fileUrl, fileName, fileType } = req.body;
+            const encryptedText = CryptoHelper.encryptMessage(text);
+            // HMAC input must match socket server and frontend
+            const hmacInput = encryptedText + (imageUrl || '') + (videoUrl || '') + (fileUrl || '') + (fileName || '') + (fileType || '');
+            const hmac = HmacHelper.generateHmac(hmacInput);
+            const message = new MessageModel({
+                text: encryptedText,
+                imageUrl,
+                videoUrl,
+                fileUrl,
+                fileName,
+                fileType,
+                msgByUserId: senderId,
+                hmac
+            });
+            await message.save();
+            await GroupModel.updateOne({ _id: groupId }, { $push: { messages: message._id } });
+            res.json({ message: 'Message sent', success: true });
         } catch (error) {
-            res.status(500).json({ message: error.message, error: true })
+            res.status(500).json({ message: error.message, error: true });
         }
     }
 

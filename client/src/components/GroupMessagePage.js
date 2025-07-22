@@ -19,7 +19,10 @@ import { toast } from 'react-hot-toast';
 import MessageActions from './MessageActions';
 import GroupManagement from './GroupManagement';
 import EmojiPicker from 'emoji-picker-react';
-import { decryptMessage } from '../shared/crypto';
+import Crypto from '../shared/crypto';
+import { FaFile } from "react-icons/fa6";
+
+let tamperedToastActive = false;
 
 const GroupMessagePage = () => {
   const socketConnection = useSelector(state => state?.user?.socketConnection)
@@ -29,7 +32,10 @@ const GroupMessagePage = () => {
   const [message, setMessage] = useState({
     text: "",
     imageUrl: "",
-    videoUrl: ""
+    videoUrl: "",
+    fileUrl: "",
+    fileName: "",
+    fileType: ""
   })
   const [loading, setLoading] = useState(false)
   const [allMessage, setAllMessage] = useState([])
@@ -48,11 +54,61 @@ const GroupMessagePage = () => {
     if (socketConnection && groupId) {
       socketConnection.emit('join-group', groupId)
       socketConnection.emit('fetch-group-messages', groupId)
-      socketConnection.on('group-message', (data) => {
-        setAllMessage(prev => [...prev, data])
+      socketConnection.on('group-message', async (msg) => {
+        setAllMessage(prev => {
+          const updated = [...prev, msg];
+          // Check for tampered messages after new message
+          checkTamperedWarning([...prev, msg]);
+          return updated;
+        });
       })
-      socketConnection.on('group-messages-history', (messages) => {
-        setAllMessage(messages)
+      socketConnection.on('group-messages-history', async (messages) => {
+        // First, check for any tampered messages in the original array
+        let tampered = false;
+        for (const msg of messages) {
+          const hmacInput =
+            (msg.encryptedText || msg.text) +
+            (msg.imageUrl || '') +
+            (msg.videoUrl || '') +
+            (msg.fileUrl || '') +
+            (msg.fileName || '') +
+            (msg.fileType || '');
+          if (msg.hmac) {
+            const valid = await Crypto.verifyHMAC(hmacInput, msg.hmac);
+            if (!valid) {
+              tampered = true;
+              break;
+            }
+          }
+        }
+        // Show only one warning at a time
+        if (tampered && !tamperedToastActive) {
+          tamperedToastActive = true;
+          toast.error('A message was tampered with and has been hidden for your security!', {
+            duration: 5000,
+            onClose: () => { tamperedToastActive = false; }
+          });
+        }
+        // Now filter out tampered messages for display
+        const verifiedMessages = [];
+        for (const msg of messages) {
+          const hmacInput =
+            (msg.encryptedText || msg.text) +
+            (msg.imageUrl || '') +
+            (msg.videoUrl || '') +
+            (msg.fileUrl || '') +
+            (msg.fileName || '') +
+            (msg.fileType || '');
+          if (msg.hmac) {
+            const valid = await Crypto.verifyHMAC(hmacInput, msg.hmac);
+            if (valid) {
+              verifiedMessages.push(msg);
+            }
+          } else {
+            verifiedMessages.push(msg);
+          }
+        }
+        setAllMessage(verifiedMessages);
       })
       socketConnection.on('group-member-added', (data) => {
         if (data.groupId === groupId) {
@@ -61,14 +117,22 @@ const GroupMessagePage = () => {
         }
       })
       socketConnection.on('message-edited', (data) => {
-        setAllMessage(prev => prev.map(msg => 
-          msg._id === data.messageId 
-            ? { ...msg, text: data.newText, edited: true, editedAt: data.editedAt }
-            : msg
-        ))
+        setAllMessage(prev => {
+          const updated = prev.map(msg => 
+            msg._id === data.messageId 
+              ? { ...msg, text: data.newText, edited: true, editedAt: data.editedAt }
+              : msg
+          );
+          checkTamperedWarning(updated);
+          return updated;
+        })
       })
       socketConnection.on('message-deleted', (data) => {
-        setAllMessage(prev => prev.filter(msg => msg._id !== data.messageId))
+        setAllMessage(prev => {
+          const updated = prev.filter(msg => msg._id !== data.messageId);
+          checkTamperedWarning(updated);
+          return updated;
+        })
       })
     }
     return () => {
@@ -81,6 +145,38 @@ const GroupMessagePage = () => {
       }
     }
   }, [socketConnection, groupId])
+
+  // Helper to check and show tampered warning only once per session
+  const checkTamperedWarning = async (messages, forceTampered) => {
+    const warningKey = `tamperedWarningShown_group_${groupId}`;
+    let tampered = typeof forceTampered === 'boolean' ? forceTampered : false;
+    if (typeof forceTampered !== 'boolean') {
+      for (const msg of messages) {
+        const hmacInput =
+          (msg.encryptedText || msg.text) +
+          (msg.imageUrl || '') +
+          (msg.videoUrl || '') +
+          (msg.fileUrl || '') +
+          (msg.fileName || '') +
+          (msg.fileType || '');
+        if (msg.hmac) {
+          const valid = await Crypto.verifyHMAC(hmacInput, msg.hmac);
+          if (!valid) {
+            tampered = true;
+            break;
+          }
+        }
+      }
+    }
+    if (tampered && !sessionStorage.getItem(warningKey)) {
+      toast.error('A message was tampered with and has been hidden for your security!', { duration: 5000 });
+      sessionStorage.setItem(warningKey, 'true');
+    }
+    // Only clear the warning if there are NO tampered messages at all and the key is set
+    if (!tampered && sessionStorage.getItem(warningKey)) {
+      sessionStorage.removeItem(warningKey);
+    }
+  };
 
   useEffect(() => {
     if (user._id && groupId) {
@@ -145,6 +241,20 @@ const GroupMessagePage = () => {
     }))
   }
 
+  const handleUploadFile = async (e) => {
+    const file = e.target.files[0];
+    setLoading(true);
+    const uploadRes = await uploadFile(file);
+    setLoading(false);
+    setOpenImageVideoUpload(false);
+    setMessage(prev => ({
+      ...prev,
+      fileUrl: uploadRes.url,
+      fileName: file.name,
+      fileType: file.type
+    }));
+  };
+
   const handleEmojiClick = (emojiObject) => {
     setMessage(prev => ({
       ...prev,
@@ -166,20 +276,36 @@ const GroupMessagePage = () => {
 
   const handleSendMessage = (e) => {
     e.preventDefault()
-    if (message.text || message.imageUrl || message.videoUrl) {
+    if (message.text || message.imageUrl || message.videoUrl || message.fileUrl) {
       if (socketConnection) {
+        console.log('DEBUG: Emitting group-message:', {
+          groupId: groupId,
+          senderId: user._id,
+          text: message.text,
+          imageUrl: message.imageUrl || '',
+          videoUrl: message.videoUrl || '',
+          fileUrl: message.fileUrl || '',
+          fileName: message.fileName || '',
+          fileType: message.fileType || ''
+        });
         socketConnection.emit('group-message', {
           groupId: groupId,
           senderId: user._id,
           text: message.text,
-          imageUrl: message.imageUrl,
-          videoUrl: message.videoUrl
+          imageUrl: message.imageUrl || '',
+          videoUrl: message.videoUrl || '',
+          fileUrl: message.fileUrl || '',
+          fileName: message.fileName || '',
+          fileType: message.fileType || ''
         })
         
         setMessage({
           text: "",
           imageUrl: "",
-          videoUrl: ""
+          videoUrl: "",
+          fileUrl: "",
+          fileName: "",
+          fileType: ""
         })
       }
     }
@@ -203,10 +329,10 @@ const GroupMessagePage = () => {
         messageId,
         groupId: groupId,
         senderId: user._id
-      })
-      toast.success('Message deleted successfully!')
+      });
+      toast.success('Message deleted successfully!');
     }
-  }
+  };
 
   const handleGroupDeleted = () => {
     // Group was deleted, redirect to home
@@ -250,32 +376,54 @@ const GroupMessagePage = () => {
       <section className='h-[calc(100vh-128px)] overflow-x-hidden overflow-y-scroll scrollbar relative bg-slate-200 bg-opacity-50'>
         <div className='flex flex-col gap-2 py-2 mx-2' ref={currentMessage}>
           {allMessage.map((msg, index) => {
-            // Fix: Only use msgByUserId for sender check, handle both object and string
             const isOwnMessage = user._id === (msg?.msgByUserId?._id || msg?.msgByUserId);
-            // Skip rendering if text is empty, whitespace, or suspicious
-            const suspiciousTexts = ["delete", "edit", "3 dt", "", null, undefined];
-            const msgText = (msg.text || "").trim().toLowerCase();
-            if (!msgText || suspiciousTexts.includes(msgText)) return null;
+            // Allow messages with any content (text, image, video, or file)
+            const hasContent =
+              (msg.text && msg.text.trim() !== '') ||
+              (msg.imageUrl && msg.imageUrl.trim() !== '') ||
+              (msg.videoUrl && msg.videoUrl.trim() !== '') ||
+              (msg.fileUrl && msg.fileUrl.trim() !== '');
+            let fileUrl = '';
+            if (msg?.fileUrl) {
+              const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8080';
+              fileUrl = msg.fileUrl.startsWith('http') ? msg.fileUrl : backendUrl + msg.fileUrl;
+            }
+            let imageUrl = '';
+            if (msg?.imageUrl) {
+              const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8080';
+              imageUrl = msg.imageUrl.startsWith('http') ? msg.imageUrl : backendUrl + msg.imageUrl;
+            }
+            let videoUrl = '';
+            if (msg?.videoUrl) {
+              const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8080';
+              videoUrl = msg.videoUrl.startsWith('http') ? msg.videoUrl : backendUrl + msg.videoUrl;
+            }
             return (
               <div key={msg._id || index} className={`p-1 py-1 rounded w-fit max-w-[280px] md:max-w-sm lg:max-w-md ${isOwnMessage ? "ml-auto bg-teal-100" : "bg-white"}`}>
                 <div className='w-full relative'>
-                  {msg?.imageUrl && (
+                  {imageUrl && (
                     <img
-                      src={msg?.imageUrl}
-                      className='w-full h-full object-scale-down'
+                      src={imageUrl}
+                      className='message-image'
                     />
                   )}
-                  {msg?.videoUrl && (
+                  {videoUrl && (
                     <video
-                      src={msg.videoUrl}
+                      src={videoUrl}
                       className='w-full h-full object-scale-down'
                       controls
                     />
                   )}
+                  {fileUrl && (
+                    <a href={fileUrl} download={msg.fileName} className='flex items-center gap-2 text-blue-600 hover:underline'>
+                      <FaFile size={18}/>
+                      <span>{msg.fileName || 'Download file'}</span>
+                    </a>
+                  )}
                 </div>
                 <div className="flex items-start justify-between gap-2">
                   <div className="flex-1">
-                    <p className='px-2'>{decryptMessage(msg.text)}</p>
+                    <p className='px-2'>{msg.text}</p>
                     {msg.edited && (
                       <p className='text-xs text-gray-500 px-2 italic'>edited</p>
                     )}
@@ -302,7 +450,7 @@ const GroupMessagePage = () => {
               <img
                 src={message.imageUrl}
                 alt='uploadImage'
-                className='aspect-square w-full h-full max-w-sm m-2 object-scale-down'
+                className='message-image m-2'
               />
             </div>
           </div>
@@ -326,8 +474,8 @@ const GroupMessagePage = () => {
         )}
 
         {loading && (
-          <div className='w-full h-full flex sticky bottom-0 justify-center items-center'>
-            <Loading />
+          <div className="flex items-center gap-2 text-blue-500 mt-2">
+            <span>Uploading file...</span>
           </div>
         )}
       </section>
@@ -353,6 +501,12 @@ const GroupMessagePage = () => {
                   </div>
                   <p>Video</p>
                 </label>
+                <label htmlFor='uploadFile' className='flex items-center p-2 px-3 gap-3 hover:bg-slate-200 cursor-pointer'>
+                  <div className='text-blue-500'>
+                    <FaFile size={18}/>
+                  </div>
+                  <p>File</p>
+                </label>
 
                 <input
                   type='file'
@@ -365,6 +519,12 @@ const GroupMessagePage = () => {
                   type='file'
                   id='uploadVideo'
                   onChange={handleUploadVideo}
+                  className='hidden'
+                />
+                <input
+                  type='file'
+                  id='uploadFile'
+                  onChange={handleUploadFile}
                   className='hidden'
                 />
               </form>
@@ -393,6 +553,19 @@ const GroupMessagePage = () => {
             value={message.text}
             onChange={handleOnChange}
           />
+          {message.fileUrl && !loading && (
+            <div className="flex items-center gap-2 bg-slate-100 p-2 rounded mt-2">
+              <FaFile size={18} className="text-blue-500" />
+              <span className="truncate max-w-xs">{message.fileName}</span>
+              <button
+                onClick={() => setMessage(prev => ({ ...prev, fileUrl: '', fileName: '', fileType: '' }))}
+                className="text-red-500 hover:text-red-700"
+                title="Remove file"
+              >
+                <IoClose size={18} />
+              </button>
+            </div>
+          )}
           <button className='text-primary hover:text-secondary'>
             <IoMdSend size={28} />
           </button>
